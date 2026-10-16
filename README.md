@@ -68,6 +68,8 @@ Source / SASS：实际指令包含SHFL.BFLY归约、MUFU.RSQ和BF16转换，融�
 
 Kernel Specialization负责固定形状和执行布局；归约顺序、FMA与BF16舍入需要另外对齐。
 
+当前接口通过 `TORCH_LIBRARY` 定义算子、`TORCH_LIBRARY_IMPL` 注册 CUDA 实现，以 `torch.ops.qk_norm_rope.fused` 调用；支持现有推理和 CUDA Graph 路径，尚未提供 autograd / FakeTensor 实现。
+
 ![image-20260921183946242](docs/images/image-20260921183946242.png)
 
 

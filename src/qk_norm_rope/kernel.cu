@@ -1,12 +1,14 @@
-#include <torch/extension.h>
+#include <ATen/ATen.h>
+#include <torch/library.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda_bf16.h>
 #include <cassert>
 #include <cmath>
+#include <tuple>
 
-using torch::Tensor;
+using at::Tensor;
 using bf16=__nv_bfloat16;
 __device__ float tree(float x) {
   #pragma unroll
@@ -72,7 +74,7 @@ __global__ void qk_kernel(const bf16* q,const bf16* k,const bf16* qw,const bf16*
   out[i+65]=__float2bfloat16_rn(__fmaf_rn(d,cs[i+1],__fmul_rn(bb,cs[i+65])));
 }
 
-std::vector<Tensor> fused(Tensor q,Tensor k,Tensor qw,Tensor kw,Tensor p,Tensor cache,double eps,int warps,bool native_graph) {
+std::tuple<Tensor,Tensor> fused_cuda(Tensor q,Tensor k,Tensor qw,Tensor kw,Tensor p,Tensor cache,double eps,int64_t warps,bool native_graph) {
   TORCH_CHECK(q.is_cuda(),"Q must be CUDA");
   for(const auto& t:{q,k,qw,kw,p,cache}) {
     TORCH_CHECK(t.device()==q.device(),"all inputs must share CUDA device");
@@ -88,7 +90,7 @@ std::vector<Tensor> fused(Tensor q,Tensor k,Tensor qw,Tensor kw,Tensor p,Tensor 
   TORCH_CHECK(std::isfinite(eps) && eps>0 && std::isfinite(float(eps)) && float(eps)>0,"eps must be finite positive FP32");
   TORCH_CHECK(warps==1 || warps==4,"warps must be 1 or 4");
   c10::cuda::CUDAGuard guard(q.device());
-  auto qo=torch::empty(q.sizes(),q.options()),ko=torch::empty(k.sizes(),k.options());
+  auto qo=at::empty(q.sizes(),q.options()),ko=at::empty(k.sizes(),k.options());
   auto stream=at::cuda::getCurrentCUDAStream(q.get_device());
   #define LAUNCH(W) qk_kernel<W><<<(q.size(0)*24+W-1)/W,W*32,0,stream>>>( \
     (bf16*)q.data_ptr(),(bf16*)k.data_ptr(),(bf16*)qw.data_ptr(),(bf16*)kw.data_ptr(), \
@@ -98,4 +100,12 @@ std::vector<Tensor> fused(Tensor q,Tensor k,Tensor qw,Tensor kw,Tensor p,Tensor 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {qo,ko};
 }
-PYBIND11_MODULE(TORCH_EXTENSION_NAME,m) { m.def("fused",&fused); }
+TORCH_LIBRARY(qk_norm_rope,m) {
+  m.def("fused(Tensor q, Tensor k, Tensor q_weight, Tensor k_weight, "
+        "Tensor positions, Tensor cos_sin_cache, float eps, int warps, "
+        "bool native_graph) -> (Tensor, Tensor)");
+}
+
+TORCH_LIBRARY_IMPL(qk_norm_rope,CUDA,m) {
+  m.impl("fused",&fused_cuda);
+}
